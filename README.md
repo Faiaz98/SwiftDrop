@@ -4,8 +4,9 @@
 
 **Secure, encrypted peer-to-peer file sharing with zero server dependency**
 
---- 
 </div>
+
+--- 
 ## Overview
 
 **SwiftDrop** is a modern, production-ready peer-to-peer file transfer application that enables direct file sharing between devices without any server intermediary. Built with React, TypeScript, and WebRTC, it provides end-to-end encrypted transers with real-time progress tracking, pause/resume capabilities, and support for local network optimization.
