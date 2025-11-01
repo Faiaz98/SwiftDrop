@@ -1,4 +1,5 @@
 import { TransferProgress } from '../types/transfer';
+import { Clock, Share2 } from 'lucide-react';
 
 interface ProgressBarProps {
   progress: TransferProgress;
@@ -14,12 +15,36 @@ export default function ProgressBar({ progress, status }: ProgressBarProps) {
     return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`;
   };
 
+  const formatSpeed = (bytesPerSecond: number) => {
+    if (!bytesPerSecond || bytesPerSecond === 0) return '0 B/s';
+    const k = 1024;
+    const sizes = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
+    const i = Math.floor(Math.log(bytesPerSecond) / Math.log(k));
+    return `${(bytesPerSecond / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`;
+  };
+
+  const formatETA = (seconds: number) => {
+    if (!seconds || seconds === Infinity || isNaN(seconds)) return 'Calculating...';
+    
+    if (seconds < 60) {
+      return `${Math.round(seconds)}s`;
+    } else if (seconds < 3600) {
+      const minutes = Math.floor(seconds / 60);
+      const secs = Math.round(seconds % 60);
+      return `${minutes}m ${secs}s`;
+    } else {
+      const hours = Math.floor(seconds / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+      return `${hours}h ${minutes}m`;
+    }
+  };
+
   const getStatusColor = () => {
     switch (status) {
       case 'transferring':
-        return 'bg-blue-500';
+        return 'bg-teal-500';
       case 'completed':
-        return 'bg-green-500';
+        return 'bg-teal-600';
       case 'failed':
         return 'bg-red-500';
       default:
@@ -60,10 +85,28 @@ export default function ProgressBar({ progress, status }: ProgressBarProps) {
         </div>
       </div>
       
-      <div className="flex justify-center mt-2">
-        <span className="text-2xl font-bold text-gray-800">
-          {progress.percentage}%
-        </span>
+      <div className="flex justify-between items-center mt-3">
+        <div className="flex items-center gap-4">
+          <span className="text-2xl font-bold text-gray-800">
+            {progress.percentage}%
+          </span>
+          
+          {status === 'transferring' && progress.speed !== undefined && (
+            <div className="flex items-center gap-3 text-sm">
+              <div className="flex items-center gap-1 text-teal-600">
+                <Share2 className="w-4 h-4" />
+                <span className="font-semibold">{formatSpeed(progress.speed)}</span>
+              </div>
+              
+              {progress.eta !== undefined && (
+                <div className="flex items-center gap-1 text-gray-600">
+                  <Clock className="w-4 h-4" />
+                  <span className="font-medium">{formatETA(progress.eta)}</span>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

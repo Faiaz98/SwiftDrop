@@ -1,8 +1,8 @@
 /**
- * WebRTC DataChannel service for P2P file transfer
+ * WebRTC DataChannel service for P2P file transfer with resumable chunks
  */
 
-import { TransferProgress } from '../types/transfer';
+import { TransferProgress, FileTransferState, ChunkState } from '../types/transfer';
 import { encryptData, decryptData } from './encryption';
 
 const CHUNK_SIZE = 16384; // 16KB chunks
@@ -23,15 +23,26 @@ export class WebRTCTransfer {
   private receivedFileType: string = '';
   private totalSize: number = 0;
   private receivedSize: number = 0;
+  private isPaused: boolean = false;
+  private currentFileStates: Map<string, FileTransferState> = new Map();
+  private useLocalNetwork: boolean = false;
 
-  constructor() {
+  constructor(useLocalNetwork: boolean = false) {
+    this.useLocalNetwork = useLocalNetwork;
     this.setupPeerConnection();
   }
 
   private setupPeerConnection() {
-    this.peerConnection = new RTCPeerConnection({
+    const config: RTCConfiguration = {
       iceServers: ICE_SERVERS,
-    });
+    };
+
+    // For local network, prioritize local candidates
+    if (this.useLocalNetwork) {
+      config.iceTransportPolicy = 'all';
+    }
+
+    this.peerConnection = new RTCPeerConnection(config);
 
     this.peerConnection.oniceconnectionstatechange = () => {
       console.log('ICE connection state:', this.peerConnection?.iceConnectionState);
@@ -60,6 +71,18 @@ export class WebRTCTransfer {
 
   onConnectionState(callback: (state: RTCPeerConnectionState) => void) {
     this.onConnectionStateCallback = callback;
+  }
+
+  pauseTransfer() {
+    this.isPaused = true;
+  }
+
+  resumeTransfer() {
+    this.isPaused = false;
+  }
+
+  isPausedState(): boolean {
+    return this.isPaused;
   }
 
   async createOffer(): Promise<RTCSessionDescriptionInit> {
@@ -159,18 +182,24 @@ export class WebRTCTransfer {
       } else if (metadata.type === 'end') {
         // Decrypt and reassemble file
         await this.reassembleFile();
+      } else if (metadata.type === 'pause') {
+        this.isPaused = true;
+      } else if (metadata.type === 'resume') {
+        this.isPaused = false;
       }
     } else {
       // File chunk (ArrayBuffer)
-      this.receivedChunks.push(data);
-      this.receivedSize += data.byteLength;
+      if (!this.isPaused) {
+        this.receivedChunks.push(data);
+        this.receivedSize += data.byteLength;
 
-      if (this.onProgressCallback) {
-        this.onProgressCallback({
-          sent: this.receivedSize,
-          total: this.totalSize,
-          percentage: Math.round((this.receivedSize / this.totalSize) * 100),
-        });
+        if (this.onProgressCallback) {
+          this.onProgressCallback({
+            sent: this.receivedSize,
+            total: this.totalSize,
+            percentage: Math.round((this.receivedSize / this.totalSize) * 100),
+          });
+        }
       }
     }
   }
@@ -207,7 +236,7 @@ export class WebRTCTransfer {
     }
   }
 
-  async sendFile(file: File) {
+  async sendFile(file: File, fileState?: FileTransferState) {
     if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
       throw new Error('Data channel not open');
     }
@@ -236,12 +265,26 @@ export class WebRTCTransfer {
     combinedData.set(iv, 0);
     combinedData.set(new Uint8Array(encrypted), iv.length);
 
-    // Send in chunks
+    // Calculate total chunks
     const totalSize = combinedData.byteLength;
-    let offset = 0;
+    const totalChunks = Math.ceil(totalSize / CHUNK_SIZE);
 
-    while (offset < totalSize) {
-      const chunk = combinedData.slice(offset, offset + CHUNK_SIZE);
+    // Determine starting chunk based on fileState
+    let startChunk = 0;
+    if (fileState && !fileState.isCompleted) {
+      startChunk = fileState.completedChunks;
+    }
+
+    // Send in chunks with resumable support
+    for (let chunkIndex = startChunk; chunkIndex < totalChunks; chunkIndex++) {
+      // Check if paused
+      while (this.isPaused) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      const start = chunkIndex * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, totalSize);
+      const chunk = combinedData.slice(start, end);
       
       // Wait for buffer to be available
       while (this.dataChannel.bufferedAmount > CHUNK_SIZE * 4) {
@@ -249,19 +292,50 @@ export class WebRTCTransfer {
       }
 
       this.dataChannel.send(chunk);
-      offset += chunk.byteLength;
 
       if (this.onProgressCallback) {
         this.onProgressCallback({
-          sent: offset,
+          sent: end,
           total: totalSize,
-          percentage: Math.round((offset / totalSize) * 100),
+          percentage: Math.round((end / totalSize) * 100),
         });
       }
     }
 
     // Send end signal
     this.dataChannel.send(JSON.stringify({ type: 'end' }));
+  }
+
+  async sendFiles(files: File[], states?: Map<string, FileTransferState>) {
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const fileId = `${file.name}-${file.size}`;
+      const fileState = states?.get(fileId);
+
+      if (this.onProgressCallback) {
+        this.onProgressCallback({
+          sent: 0,
+          total: file.size,
+          percentage: 0,
+          currentFileIndex: i,
+          totalFiles: files.length,
+        });
+      }
+
+      await this.sendFile(file, fileState);
+    }
+  }
+
+  sendPauseSignal() {
+    if (this.dataChannel && this.dataChannel.readyState === 'open') {
+      this.dataChannel.send(JSON.stringify({ type: 'pause' }));
+    }
+  }
+
+  sendResumeSignal() {
+    if (this.dataChannel && this.dataChannel.readyState === 'open') {
+      this.dataChannel.send(JSON.stringify({ type: 'resume' }));
+    }
   }
 
   close() {
