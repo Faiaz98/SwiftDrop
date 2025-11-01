@@ -9,7 +9,7 @@ import { generateEncryptionKey, exportKey, importKey } from '../api/encryption';
 import { storageService } from '../api/storage';
 import { TransferProgress, TransferMode, NetworkMode } from '../types/transfer';
 
-type TransferStatus = 'idle' | 'waiting-connection' | 'connecting' | 'connected' | 'transferring' | 'completed' | 'failed' | 'paused';
+type TransferStatus = 'idle' | 'waiting-connection' | 'waiting-answer' | 'connecting' | 'connected' | 'transferring' | 'completed' | 'failed' | 'paused';
 
 export default function Transfer() {
   const [mode, setMode] = useState<TransferMode>(null);
@@ -21,6 +21,8 @@ export default function Transfer() {
   const [sessionCode, setSessionCode] = useState<string>('');
   const [sessionData, setSessionData] = useState<string>('');
   const [receiverCode, setReceiverCode] = useState<string>('');
+  const [senderAnswerCode, setSenderAnswerCode] = useState<string>('');
+  const [answerData, setAnswerData] = useState<string>('');
   const [connectionState, setConnectionState] = useState<string>('disconnected');
   const [showHistory, setShowHistory] = useState(false);
   const [networkMode, setNetworkMode] = useState<NetworkMode>('internet');
@@ -206,14 +208,48 @@ export default function Transfer() {
       // Handle offer and create answer
       const answer = await webrtc.handleOffer(data.offer);
       
-      // Add ICE candidates
+      // Add ICE candidates from sender
       for (const candidate of data.iceCandidates) {
         await webrtc.addIceCandidate(candidate);
       }
 
-      setStatus('connected');
+      // Get receiver's ICE candidates
+      const receiverIceCandidates = await webrtc.getLocalIceCandidates();
+
+      // Package answer data for sender
+      const answerPackage = {
+        answer,
+        iceCandidates: receiverIceCandidates,
+      };
+
+      setAnswerData(JSON.stringify(answerPackage));
+      setStatus('waiting-answer');
     } catch (error) {
       console.error('Error setting up receiver:', error);
+      setStatus('failed');
+    }
+  };
+
+  const handleSenderAnswer = async () => {
+    if (!senderAnswerCode || !webrtcRef.current) return;
+
+    try {
+      setStatus('connecting');
+
+      // Parse answer data
+      const data = JSON.parse(senderAnswerCode);
+      
+      // Handle answer
+      await webrtcRef.current.handleAnswer(data.answer);
+      
+      // Add ICE candidates from receiver
+      for (const candidate of data.iceCandidates) {
+        await webrtcRef.current.addIceCandidate(candidate);
+      }
+
+      // Connection will be established via callbacks
+    } catch (error) {
+      console.error('Error processing answer:', error);
       setStatus('failed');
     }
   };
@@ -460,12 +496,33 @@ export default function Transfer() {
           )}
 
           {status === 'waiting-connection' && sessionData && (
-            <div className="flex justify-center">
-              <ConnectionCode
-                code={sessionCode}
-                sessionData={sessionData}
-                onClose={handleReset}
-              />
+            <div className="space-y-6">
+              <div className="flex justify-center">
+                <ConnectionCode
+                  code={sessionCode}
+                  sessionData={sessionData}
+                  onClose={handleReset}
+                />
+              </div>
+              <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+                <h3 className="text-lg font-semibold text-gray-900 mb-4">Step 2: Paste Answer Code</h3>
+                <p className="text-sm text-gray-600 mb-4">
+                  After the receiver pastes your connection code, they will receive an answer code. Paste it here to complete the connection.
+                </p>
+                <textarea
+                  value={senderAnswerCode}
+                  onChange={(e) => setSenderAnswerCode(e.target.value)}
+                  placeholder="Paste the answer code from receiver..."
+                  className="w-full h-32 p-4 border border-gray-200 rounded-xl focus:border-teal-500 focus:ring-2 focus:ring-teal-200 focus:outline-none transition-all duration-200 font-mono text-sm mb-4"
+                />
+                <button
+                  onClick={handleSenderAnswer}
+                  disabled={!senderAnswerCode}
+                  className="w-full bg-teal-600 hover:bg-teal-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-semibold py-3 px-6 rounded-xl transition-colors duration-200"
+                >
+                  Complete Connection
+                </button>
+              </div>
             </div>
           )}
 
@@ -611,6 +668,37 @@ export default function Transfer() {
               >
                 Connect and Receive
               </button>
+            </div>
+          )}
+
+          {status === 'waiting-answer' && answerData && (
+            <div className="bg-white rounded-2xl p-8 shadow-sm border border-gray-100 space-y-6">
+              <h2 className="text-2xl font-bold text-gray-900 text-center mb-4">
+                Share This Answer Code
+              </h2>
+              <p className="text-gray-600 text-center mb-6">
+                Copy this answer code and send it back to the sender to complete the connection
+              </p>
+              <div className="space-y-4">
+                <div className="relative">
+                  <textarea
+                    value={answerData}
+                    readOnly
+                    className="w-full h-40 p-4 border border-gray-200 rounded-xl font-mono text-xs bg-gray-50 focus:outline-none"
+                  />
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(answerData);
+                    }}
+                    className="absolute top-2 right-2 bg-teal-600 hover:bg-teal-700 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200 text-sm"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+              <div className="text-center text-sm text-gray-500">
+                Waiting for sender to complete the connection...
+              </div>
             </div>
           )}
 
